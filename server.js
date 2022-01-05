@@ -11,7 +11,9 @@ app.use(express.json())
 const UserRouter = require('./api/User')
 // Using API
 app.use('/user', UserRouter)
-
+app.get('/', (req, res) => {
+    res.send('HELLO')
+})
 
 app.listen(port, () => {
     console.log(`Server running on port ${port}`)
