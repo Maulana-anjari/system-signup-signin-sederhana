@@ -1,10 +1,38 @@
 const express = require('express')
 const router = express.Router()
-// mongodb user model
+// *mongodb user model
 const User = require('./../models/User')
-// password handler (crypt)
+// *mongodb user verification model
+const UserVerification = require('./../models/UserVerification')
+// ? HANDLER
+// *password handler (crypt)
 const bcrypt = require('bcrypt')
-// Signup
+// *email handler
+const nodemailer = require('nodemailer')
+// *unique string (TOKEN) handler
+const {v4: uuidv4} = require('uuid')
+
+// *env variables
+require('dotenv').config()
+// *notmailer stuff
+let transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+        user: process.env.AUTH_EMAIL,
+        pass: process.env.AUTH_PASS
+    }
+})
+// ! TESTING TRANSPORTER
+transporter.verify((error, success) => {
+    if(error) {
+        console.log(error)
+    } else {
+        console.log("Ready for message")
+        console.log(success)
+    }
+})
+
+// *Signup
 router.post('/signup', (req, res) => {
     let {name, email, password, dateOfBirth} = req.body
     name = name.trim()
@@ -56,14 +84,18 @@ router.post('/signup', (req, res) => {
                         name,
                         email,
                         password: hashedPassword,
-                        dateOfBirth
+                        dateOfBirth,
+                        verified: false
                     })
                     newUser.save().then(result => {
-                        res.json({
-                            status: "SUCCESS",
-                            message: "Signup successful!",
-                            data: result,
-                        })
+                        // res.json({
+                        //     status: "SUCCESS",
+                        //     message: "Signup successful!",
+                        //     data: result,
+                        // })
+
+                        // ? Handle account verification
+                        sendVerificationEmail(result, res)
                     })
                     .catch(err => {
                         res.json({
@@ -89,7 +121,68 @@ router.post('/signup', (req, res) => {
         })
     }
 })
-// Signin
+
+// ? SEND VERIFICATION EMAIL
+const sendVerificationEmail = ({_id, email}, res) => {
+    // url to be used in the email
+    const currentUrl = "http://localhost:3000/"
+    const token = uuidv4() + _id // ? unique string
+    const mailOptions = {
+        from: process.env.AUTH_EMAIL,
+        to: email, // put from param result
+        subject: "Verify Your Email",
+        html: `<p>Verify yout email address to complete the signup and login into your account.</p>
+                <p>This link <b>expires in 6 hours</b></p>
+                <p>Press <a href=${currentUrl + "user/verify/" + _id + "/" + token}>here</a> to process.</p>`
+    }
+    const saltRounds = 10
+    bcrypt
+        .hash(token, saltRounds)
+        .then((hashedToken) => {
+            // set values in to userverification collection
+            const newVerification = new UserVerification({
+                userId: _id,
+                token: hashedToken,
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 21600000
+            })
+            newVerification
+                .save()
+                .then(() => {
+                    transporter
+                    .sendMail(mailOptions)
+                    .then(() => {
+                        // email sent and verification record saved
+                        res.json({
+                            status: "PENDING",
+                            message: "Verivication email sent"
+                        })
+                    })
+                    .catch((error) => {
+                        console.log(error)
+                        res.json({
+                            status: "FAILED",
+                            message: "Verivication email failed!"
+                        })
+                    })
+                })
+                .catch((error) => {
+                    console.log(error)
+                    res.json({
+                        status: "FAILED",
+                        message: "Couldn't save verification email data!"
+                    })
+                })
+        })
+        .catch(() => {
+            res.json({
+                status: "FAILED",
+                message: "An error occured while hashing email data!"
+            })
+        })
+}
+
+// *Signin
 router.post('/signin', (req, res) => {
     let {email, password} = req.body
     email = email.trim()
@@ -109,14 +202,14 @@ router.post('/signin', (req, res) => {
                 const hashedPassword = data[0].password
                 bcrypt.compare(password, hashedPassword).then(result => {
                     if (result) {
-                        // password match
+                        // ? password match
                         res.json({
                             status: "SUCCESS",
                             message: "Signin successful!",
                             data: data
                         })
                     } else {
-                        // password not match
+                        // ? password not match
                         res.json({
                             status: "FAILED",
                             message: "Invalid password entered!"
