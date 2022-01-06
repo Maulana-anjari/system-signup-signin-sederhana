@@ -2,18 +2,28 @@ const express = require('express')
 const router = express.Router()
 // *mongodb user model
 const User = require('./../models/User')
+
 // *mongodb user verification model
 const UserVerification = require('./../models/UserVerification')
-// ? HANDLER
+
+// ? HANDLER ? //
 // *password handler (crypt)
 const bcrypt = require('bcrypt')
+
 // *email handler
 const nodemailer = require('nodemailer')
+
 // *unique string (TOKEN) handler
-const {v4: uuidv4} = require('uuid')
+const { v4: uuidv4 } = require('uuid')
+
 
 // *env variables
 require('dotenv').config()
+
+// *path for static verified page
+const path = require('path')
+
+
 // *notmailer stuff
 let transporter = nodemailer.createTransport({
     service: "gmail",
@@ -22,31 +32,32 @@ let transporter = nodemailer.createTransport({
         pass: process.env.AUTH_PASS
     }
 })
+
 // ! TESTING TRANSPORTER
 transporter.verify((error, success) => {
-    if(error) {
+    if (error) {
         console.log(error)
     } else {
-        console.log("Ready for message")
-        console.log(success)
+        console.log("Ready to send message")
+        console.log("Success: " + success)
     }
 })
 
 // *Signup
 router.post('/signup', (req, res) => {
-    let {name, email, password, dateOfBirth} = req.body
+    let { name, email, password, dateOfBirth } = req.body
     name = name.trim()
     email = email.trim()
     password = password.trim()
     dateOfBirth = dateOfBirth.trim()
     // validation form
     // if empty input value
-    if  (name == "" || email == "" || password == "" || dateOfBirth == "") {
+    if (name == "" || email == "" || password == "" || dateOfBirth == "") {
         res.json({
             status: "FAILED",
             message: "Empty input fields!"
         })
-    // if name value is invalid
+        // if name value is invalid
     } else if (!/^[a-zA-Z ]*$/.test(name)) {
         res.json({
             status: "FAILED",
@@ -69,8 +80,8 @@ router.post('/signup', (req, res) => {
         })
     } else {
         // Checking if user already exists
-        User.find({email}).then(result => {
-            if (result.length){
+        User.find({ email }).then(result => {
+            if (result.length) {
                 res.json({
                     status: "FAILED",
                     message: "User with the provided email already exists!"
@@ -97,20 +108,20 @@ router.post('/signup', (req, res) => {
                         // ? Handle account verification
                         sendVerificationEmail(result, res)
                     })
+                        .catch(err => {
+                            res.json({
+                                status: "FAILED",
+                                message: "An error occurred while saving new user!",
+                                err
+                            })
+                        })
+                })
                     .catch(err => {
                         res.json({
                             status: "FAILED",
-                            message: "An error occurred while saving new user!",
-                            err
+                            message: "An error occurred while hashing password!"
                         })
                     })
-                })
-                .catch(err => {
-                    res.json({
-                        status: "FAILED",
-                        message: "An error occurred while hashing password!"
-                    })
-                })
             }
         }).catch(err => {
             console.log(err)
@@ -123,14 +134,14 @@ router.post('/signup', (req, res) => {
 })
 
 // ? SEND VERIFICATION EMAIL
-const sendVerificationEmail = ({_id, email}, res) => {
+const sendVerificationEmail = ({ _id, email }, res) => {
     // url to be used in the email
     const currentUrl = "http://localhost:3000/"
     const token = uuidv4() + _id // ? unique string
     const mailOptions = {
         from: process.env.AUTH_EMAIL,
         to: email, // put from param result
-        subject: "Verify Your Email",
+        subject: "[NO REPLY] Verify Your Email",
         html: `<p>Verify yout email address to complete the signup and login into your account.</p>
                 <p>This link <b>expires in 6 hours</b></p>
                 <p>Press <a href=${currentUrl + "user/verify/" + _id + "/" + token}>here</a> to process.</p>`
@@ -150,21 +161,21 @@ const sendVerificationEmail = ({_id, email}, res) => {
                 .save()
                 .then(() => {
                     transporter
-                    .sendMail(mailOptions)
-                    .then(() => {
-                        // email sent and verification record saved
-                        res.json({
-                            status: "PENDING",
-                            message: "Verivication email sent"
+                        .sendMail(mailOptions)
+                        .then(() => {
+                            // email sent and verification record saved
+                            res.json({
+                                status: "PENDING",
+                                message: "Verification email sent"
+                            })
                         })
-                    })
-                    .catch((error) => {
-                        console.log(error)
-                        res.json({
-                            status: "FAILED",
-                            message: "Verivication email failed!"
+                        .catch((error) => {
+                            console.log(error)
+                            res.json({
+                                status: "FAILED",
+                                message: "Verification email failed!"
+                            })
                         })
-                    })
                 })
                 .catch((error) => {
                     console.log(error)
@@ -182,9 +193,97 @@ const sendVerificationEmail = ({_id, email}, res) => {
         })
 }
 
+// ? verify Email
+router.get('/verify/:userId/:token', (req, res) => {
+    let { userId, token } = req.params
+    UserVerification
+        .find({ userId })
+        .then((result) => {
+            if (result.length > 0) {
+                // user verification record exists so we proceed
+                const { expiresAt } = result[0]
+                const hashedToken = result[0].token
+                // checking for expired token (unique string)
+                if (expiresAt < Date.now()) {
+                    // record has expired so we delete it
+                    UserVerification
+                        .deleteOne({ userId })
+                        .then(result => {
+                            User
+                                .deleteOne({ _id: userId })
+                                .then(result => {
+                                    let message = "Link has expired. Please sign up again"
+                                    res.redirect(`/user/verified/error=true&message=${message}`)
+                                })
+                                .catch(error => {
+                                    let message = "Clearing user eith expired token failed"
+                                    res.redirect(`/user/verified/error=true&message=${message}`)
+                                })
+                        })
+                        .catch((error) => {
+                            console.log(error)
+                            let message = "An error occurred while clearing expired user verification record"
+                            res.redirect(`/user/verified/error=true&message=${message}`)
+                        })
+                } else {
+                    // valid record exists so we validate the user token
+                    // first compare the hashed unique string (token)
+                    bcrypt
+                        .compare(token, hashedToken)
+                        .then(result => {
+                            if (result) {
+                                // string match, then update verified field to true
+                                User
+                                    .updateOne({ _id: userId }, { verified: true })
+                                    .then(() => {
+                                        UserVerification
+                                            .deleteOne({ userId })
+                                            .then(() => {
+                                                res.sendFile(path.join(__dirname, "./../views/verified.html"))
+                                            })
+                                            .catch(error => {
+                                                console.log(error)
+                                                let message = "An error occurred while finalizing successful verification"
+                                                res.redirect(`/user/verified/error=true&message=${message}`)
+                                            })
+                                    })
+                                    .catch(error => {
+                                        console.log(error)
+                                        let message = "An error occurred while updating user record to show verified"
+                                        res.redirect(`/user/verified/error=true&message=${message}`)
+                                    })
+                            } else {
+                                // existing record but incorrect verification details passed
+                                let message = "Invalid verification details passed. Check your inbox."
+                                res.redirect(`/user/verified/error=true&message=${message}`)
+                            }
+                        })
+                        .catch(error => {
+                            let message = "An error occurred while comparing token/unique string"
+                            res.redirect(`/user/verified/error=true&message=${message}`)
+                        })
+
+                }
+            } else {
+                // user verification record doesn't exists
+                let message = "Account record doesn't exist or has been verified already. Please sign up or log in."
+                res.redirect(`/user/verified/error=true&message=${message}`)
+            }
+        })
+        .catch((error) => {
+            console.log(error)
+            let message = "An error occurred while checking for existing user verification record"
+            res.redirect(`/user/verified/error=true&message=${message}`)
+        })
+})
+// ? verified page
+router.get('/verified', (req, res) => {
+    res.sendFile(path.join(__dirname, "./../views/verified.html"))
+})
+
 // *Signin
 router.post('/signin', (req, res) => {
-    let {email, password} = req.body
+    let { email, password } = req.body
     email = email.trim()
     password = password.trim()
     // check if input is Empty
@@ -195,46 +294,55 @@ router.post('/signin', (req, res) => {
         })
     } else {
         // check if user exist
-        User.find({email})
-        .then(data => {
-            if (data.length) {
-                // User exist
-                const hashedPassword = data[0].password
-                bcrypt.compare(password, hashedPassword).then(result => {
-                    if (result) {
-                        // ? password match
-                        res.json({
-                            status: "SUCCESS",
-                            message: "Signin successful!",
-                            data: data
-                        })
-                    } else {
-                        // ? password not match
+        User.find({ email })
+            .then(data => {
+                if (data.length) {
+                    // User exist
+                    // check if user is verified
+                    if (!data[0].verified) {
                         res.json({
                             status: "FAILED",
-                            message: "Invalid password entered!"
+                            message: "Email hasn't been verified yet. Check your inbox!"
                         })
+                    } else {
+                        const hashedPassword = data[0].password
+                        bcrypt.compare(password, hashedPassword)
+                            .then(result => {
+                                if (result) {
+                                    // ? password match
+                                    res.json({
+                                        status: "SUCCESS",
+                                        message: "Signin successful!",
+                                        data: data
+                                    })
+                                } else {
+                                    // ? password not match
+                                    res.json({
+                                        status: "FAILED",
+                                        message: "Invalid password entered!"
+                                    })
+                                }
+                            })
+                            .catch(err => {
+                                res.json({
+                                    status: "FAILED",
+                                    message: "An error occurred while comparing passwords"
+                                })
+                            })
                     }
-                })
-                .catch(err => {
+                } else {
                     res.json({
                         status: "FAILED",
-                        message: "An error occurred while comparing passwords"
+                        message: "Email is not registered!"
                     })
-                })
-            } else {
+                }
+            })
+            .catch(err => {
                 res.json({
                     status: "FAILED",
-                    message: "Email is not registered!"
+                    message: "An error occurred while checking for existing user"
                 })
-            }
-        })
-        .catch(err => {
-            res.json({
-                status: "FAILED",
-                message: "An error occurred while checking for existing user"
             })
-        })
     }
 })
 
