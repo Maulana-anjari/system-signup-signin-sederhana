@@ -1,21 +1,23 @@
 const express = require('express')
 const router = express.Router()
+
+// ? USING MODEL ? //
 // *mongodb user model
 const User = require('./../models/User')
-
 // *mongodb user verification model
 const UserVerification = require('./../models/UserVerification')
+// *mongodb password reset model
+const PasswordReset = require('./../models/PasswordReset')
+// ? END USING MODEL ? //
 
-// ? HANDLER ? //
+// ? USING HANDLER ? //
 // *password handler (crypt)
 const bcrypt = require('bcrypt')
-
 // *email handler
 const nodemailer = require('nodemailer')
-
 // *unique string (TOKEN) handler
 const { v4: uuidv4 } = require('uuid')
-
+// ? END USING HANDLER ? //
 
 // *env variables
 require('dotenv').config()
@@ -33,7 +35,7 @@ let transporter = nodemailer.createTransport({
     }
 })
 
-// ! TESTING TRANSPORTER
+// ? TESTING TRANSPORTER ? //
 transporter.verify((error, success) => {
     if (error) {
         console.log(error)
@@ -43,7 +45,7 @@ transporter.verify((error, success) => {
     }
 })
 
-// *Signup
+// ? ROUTER: Sign up ? //
 router.post('/signup', (req, res) => {
     let { name, email, password, dateOfBirth } = req.body
     name = name.trim()
@@ -104,7 +106,6 @@ router.post('/signup', (req, res) => {
                         //     message: "Signup successful!",
                         //     data: result,
                         // })
-
                         // ? Handle account verification
                         sendVerificationEmail(result, res)
                     })
@@ -133,7 +134,7 @@ router.post('/signup', (req, res) => {
     }
 })
 
-// ? SEND VERIFICATION EMAIL
+// ? FUNCTION: Send verification email ? //
 const sendVerificationEmail = ({ _id, email }, res) => {
     // url to be used in the email
     const currentUrl = "http://localhost:3000/"
@@ -193,7 +194,7 @@ const sendVerificationEmail = ({ _id, email }, res) => {
         })
 }
 
-// ? verify Email
+// ? ROUTER: Verify Email ? //
 router.get('/verify/:userId/:token', (req, res) => {
     let { userId, token } = req.params
     UserVerification
@@ -262,7 +263,6 @@ router.get('/verify/:userId/:token', (req, res) => {
                             let message = "An error occurred while comparing token/unique string"
                             res.redirect(`/user/verified/error=true&message=${message}`)
                         })
-
                 }
             } else {
                 // user verification record doesn't exists
@@ -276,12 +276,13 @@ router.get('/verify/:userId/:token', (req, res) => {
             res.redirect(`/user/verified/error=true&message=${message}`)
         })
 })
-// ? verified page
+
+// ? ROUTER: Verified Page ? //
 router.get('/verified', (req, res) => {
     res.sendFile(path.join(__dirname, "./../views/verified.html"))
 })
 
-// *Signin
+// ? ROUTER: Sign in ? //
 router.post('/signin', (req, res) => {
     let { email, password } = req.body
     email = email.trim()
@@ -344,6 +345,241 @@ router.post('/signin', (req, res) => {
                 })
             })
     }
+})
+// ? ROUTER: Reset Password ? //
+router.post('/requestPasswordReset', (req, res) => {
+    const { email, redirectUrl } = req.body
+
+    // TODO: check if email exists
+    User
+        .find({ email })
+        .then((data) => {
+            if (data.length) {
+                // * USER EXISTS * //
+                // TODO: check if user is verified
+                if (!data[0].verified) {
+                    // ! USER NOT VERIFIED ! //
+                    res.json({
+                        status: "FAILED",
+                        message: "Email hasn't been verified yet. Check your inbox!"
+                    })
+                } else {
+                    // * USER VERIFIED * //
+                    sendResetMail(data[0], redirectUrl, res)
+                }
+            } else {
+                // ! USER NOT EXISTS ! //
+                res.json({
+                    status: "FAILED",
+                    message: "No account with the supplied email exists!"
+                })
+            }
+        })
+        .catch(error => {
+            // ! ERROR WHILE CHECKING ! //
+            res.json({
+                status: "FAILED",
+                message: "An error occurred while checking for existing user"
+            })
+        })
+})
+
+// ? FUNCTION: Send password reset email ? //
+const sendResetMail = ({ _id, email }, redirectUrl, res) => {
+    const resetToken = uuidv4() + _id
+    // TODO: Clear all existing reset records because maybe user click many request
+    PasswordReset
+        .deleteMany({ userId: _id })
+        .then(result => {
+            // * RESET RECORDS DELETED SUCCESSFULLY * //
+            // TODO: Send the Email
+            // ? Mail option ? //
+            const mailOptions = {
+                from: process.env.AUTH_EMAIL,
+                to: email, // put from param result
+                subject: "[NO REPLY] Reset Password",
+                html: `<p>We heard that you lost the password.</p>
+                        <p>Don't worry, use the link below to reset it.</p>
+                        <p>This link <b>expires in 60 minute</b>.</p>
+                        <p>Press <a href=${redirectUrl + "/" + _id + "/" + resetToken}>here</a> to process.</p>`
+            }
+            // TODO: Hash the reset token
+            const saltrounds = 10
+            bcrypt
+                .hash(resetToken, saltrounds)
+                .then(hashedResetToken => {
+                    // TODO: Set values in password reset collection
+                    const newPasswordReset = new PasswordReset({
+                        userId: _id,
+                        resetToken: hashedResetToken,
+                        createdAt: Date.now(),
+                        expiresAt: Date.now() + 3600000
+                    })
+                    newPasswordReset
+                        .save()
+                        .then(() => {
+                            transporter
+                                .sendMail(mailOptions)
+                                .then(() => {
+                                    // * EMAIL SUCCESSFULLY SENT & PASSWORD RESET RECORD SAVED * //
+                                    res.json({
+                                        status: "PENDING",
+                                        message: "Password reset mail sent"
+                                    })
+                                })
+                                .catch(error => {
+                                    // ! ERROR WHILE SAVING PASSWORD RESET DATA ! //
+                                    console.log(error)
+                                    res.json({
+                                        status: "FAILED",
+                                        message: "Password reset email failed!"
+                                    })
+                                })
+                        })
+                        .catch(error => {
+                            // ! ERROR WHILE SAVING PASSWORD RESET DATA ! //
+                            console.log(error)
+                            res.json({
+                                status: "FAILED",
+                                message: "Couldn't save password reset data!"
+                            })
+                        })
+                })
+                .catch(error => {
+                    // ! ERROR WHILE HASHING PASSWORD RESET ! //
+                    console.log(error)
+                    res.json({
+                        status: "FAILED",
+                        message: "An error occured while hashing the password reset data!"
+                    })
+                })
+        })
+        .catch(error => {
+            // ! ERROR WHILE CLEARING EXISTING RECORDS ! //
+            console.log(error)
+            res.json({
+                status: "FAILED",
+                message: "Clearing existing password reset records failed"
+            })
+        })
+}
+
+// ? ROUTER FOR RESET PASSWORD ? //
+router.post('/resetPassword', (req, res) => {
+    let { userId, resetToken, newPassword } = req.body
+    PasswordReset
+        .find({ userId })
+        .then(result => {
+            if (result.length > 0) {
+                // * PASSWORD RESET RECORD EXISTS * //
+                const { expiresAt } = result[0]
+                const hashedToken = result[0].resetToken
+                // TODO: Checking for expired reset token
+                if (expiresAt < Date.now()) {
+                    PasswordReset
+                        .deleteOne({ userId })
+                        .then(() => {
+                            // * RESET RECORD DELETED SUCCESSFULLY * //
+                            res.json({
+                                status: "FAILED",
+                                message: "Password reset link has expired"
+                            })
+                        })
+                        .catch(error => {
+                            // ! ERROR WHILE CLEARING PASSWORD RESET RECORD ! //
+                            console.log(error)
+                            res.json({
+                                status: "FAILED",
+                                message: "Clearing password reset record failed"
+                            })
+                        })
+                } else {
+                    // * VALID RESET RECORD EXISTS * //
+                    // TODO: Validate the reset token
+                    // TODO: compare the hashed reset token
+                    bcrypt
+                        .compare(resetToken, hashedToken)
+                        .then(result => {
+                            if (result) {
+                                // * TOKEN MATCHED * //
+                                // TODO: Hash password again
+                                const saltrounds = 10
+                                bcrypt
+                                    .hash(newPassword, saltrounds)
+                                    .then(hashedNewPassword => {
+                                        // TODO: Update user password
+                                        User
+                                            .updateOne({ _id: userId }, { password: hashedNewPassword })
+                                            .then(() => {
+                                                // * UPDATE COMPLETED * //
+                                                PasswordReset
+                                                    .deleteOne({userId})
+                                                    .then(() => {
+                                                        // * USER RECORD AND RESET RECORD UPDATED * //
+                                                        res.json({
+                                                            status: "SUCCESS",
+                                                            message: "Password has been reset successfully"
+                                                        })
+                                                    })
+                                                    .catch(error => {
+                                                        // ! ERROR WHILE FINALIZING PASSWORD RESET ! //
+                                                        console.log(error)
+                                                        res.json({
+                                                            status: "FAILED",
+                                                            message: "An error occurred while finalizing password reset"
+                                                        })
+                                                    })
+                                            })
+                                            .catch(error => {
+                                                // ! ERROR WHILE UPDATING USER PASSWORD ! //
+                                                console.log(error)
+                                                res.json({
+                                                    status: "FAILED",
+                                                    message: "Updating user password failed"
+                                                })
+                                            })
+                                    })
+                                    .catch(error => {
+                                        // ! ERROR WHILE HASING NEW PASSWORD ! //
+                                        console.log(error)
+                                        res.json({
+                                            status: "FAILED",
+                                            message: "An error occurred while hashing new password"
+                                        })
+                                    })
+                            } else {
+                                // ! EXISTING RECORD BUT INCORRECT RESET TOKEN PASSED ! //
+                                res.json({
+                                    status: "FAILED",
+                                    message: "Invalid password reset details passed"
+                                })
+                            }
+                        })
+                        .catch(error => {
+                            // ! ERROR WHILE COMPARING PASSWORD RESET TOKEN ! //
+                            console.log(error)
+                            res.json({
+                                status: "FAILED",
+                                message: "Comparing password reset token failed"
+                            })
+                        })
+                }
+            } else {
+                // ! PASSWORD RESET RECORD DOESN"T EXIST ! //
+                res.json({
+                    status: "FAILED",
+                    message: "Password reset request not found."
+                })
+            }
+        })
+        .catch(error => {
+            // ! ERROR WHILE CHECKING FOR EXISTING PASSWORD RESET RECORD FAILED ! //
+            console.log(error)
+            res.json({
+                status: "FAILED",
+                message: "Checking for existing password reset record failed."
+            })
+        })
 })
 
 module.exports = router
